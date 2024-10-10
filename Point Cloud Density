@@ -1,0 +1,57 @@
+calculate_point_density(ply, planeParams=None, alignedAxis=None, isObject=False):
+    """
+    Calculates point density for a plane or 3D object using Open3D. Estimates missing parameters if needed.
+    """
+    if isinstance(ply, o3d.geometry.PointCloud):  # Extract vertices if ply is Open3D point cloud
+        vertices = np.asarray(ply.points)
+    elif isinstance(ply, np.ndarray):  # Handle ndarray input
+        vertices = ply
+    else:  # Handle list of vertices
+        vertices = np.array(ply)
+
+    if vertices.shape[1] != 3:  # Ensure the input has 3D coordinates
+        raise ValueError('Invalid number of dimensions (3D coordinates expected)')
+
+    if isObject:  # If calculating density for a full 3D object
+        hull = scipy.spatial.ConvexHull(vertices)  # Compute convex hull for 3D object
+        return vertices.shape[0] / hull.volume  # Return point density (points/volume)
+
+    if planeParams is None:  # Estimate plane parameters if not provided
+        # Estimate normal using Open3D plane fitting
+        pcd = o3d.geometry.PointCloud()  # Create point cloud
+        pcd.points = o3d.utility.Vector3dVector(vertices)  # Assign vertices to point cloud
+        plane_model, _ = pcd.segment_plane(distance_threshold=0.01, ransac_n=3, num_iterations=1000)  # Fit plane
+        planeParams = plane_model  # Use fitted plane parameters
+
+    zAxis = np.array([0.0, 0.0, 1.0])  # Define z-axis
+    planeNormal = np.array(planeParams[:3])  # Get plane normal from parameters
+    unitPlaneNormal = planeNormal / np.linalg.norm(planeNormal)  # Normalize plane normal
+
+    vec = unitPlaneNormal / np.linalg.norm(planeNormal)**2  # Compute vector to shift plane
+    vertices += vec  # Shift vertices to the origin
+
+    vecDot = unitPlaneNormal.dot(zAxis)  # Calculate dot product with z-axis
+    vecCross = np.cross(zAxis, unitPlaneNormal)  # Calculate cross product with z-axis
+    vecCrossNorm = np.linalg.norm(vecCross)  # Normalize cross product
+    G = np.array([[vecDot, -vecCrossNorm, 0], [vecCrossNorm, vecDot, 0], [0, 0, 1]])  # Create rotation matrix
+
+    u = unitPlaneNormal  # Define u-axis for transformation
+    v = (zAxis - vecDot * unitPlaneNormal) / np.linalg.norm(zAxis - vecDot * unitPlaneNormal)  # Define v-axis
+    w = vecCross  # Define w-axis
+    Finv = np.column_stack([u, v, w])  # Stack u, v, w into matrix
+    U = Finv.dot(G.dot(np.linalg.inv(Finv)))  # Compute full transformation matrix
+
+    vertices = U.dot(vertices.T).T  # Apply transformation to vertices
+
+    hull = scipy.spatial.ConvexHull(vertices[:, :2])  # Compute convex hull in XY plane
+    return vertices.shape[0] / hull.volume  # Return point density for plane
+
+    if alignedAxis is not None:  # If the plane is assumed to be aligned to an axis
+        idx = np.array([0, 1, 2]) != alignedAxis  # Select axes excluding the aligned one
+        v = vertices[:, idx]  # Project vertices onto 2D plane
+
+        hull = scipy.spatial.ConvexHull(v)  # Compute 2D convex hull
+        return v.shape[0] / hull.volume  # Return point density for aligned plane
+
+    # Default behavior if no planeParams or alignedAxis are provided
+    return vertices.shape[0] / np.ptp(vertices[:, :2])
